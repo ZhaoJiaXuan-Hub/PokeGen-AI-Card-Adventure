@@ -3,21 +3,26 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { INITIAL_TOKENS, SCOUT_COST, ENHANCE_ART_COST, TYPE_CHART, BATTLE_REWARD_BASE, STAGES_PER_ZONE, ZONES, STARTER_PACK_SIZE, SKILL_DATABASE, MASTER_CARDS, STARTER_DEX_IDS } from './constants';
 import { CardData, Inventory, Rarity, BattleState, AdventureProgress, Skill, BattleCard, Buff, HitMeta, GameState, BattleStatus } from './types';
 import { generateCardArt } from './services/geminiService';
+import { audioService } from './services/audioService';
 import { CardView } from './components/CardView';
 import { InventoryGrid } from './components/InventoryGrid';
 import { BattleArena } from './components/BattleArena';
 import { AdventureView } from './components/AdventureView';
 import { PokedexView } from './components/PokedexView';
-import { Layers, Compass, X, Wallet, Maximize2, Minimize2, Joystick, Search, Bug, BookOpen, Gift, Save, Upload, Download, Trash2, Play, LogOut } from 'lucide-react';
+import { Layers, Compass, X, Wallet, Maximize2, Minimize2, Joystick, Search, BookOpen, Gift, Upload, Download, Play, LogOut, HelpCircle, AlertTriangle, Trophy, Volume2, VolumeX, Skull } from 'lucide-react';
 
-// ---- Main Component ----
+interface NotificationState {
+    isOpen: boolean;
+    type: 'alert' | 'confirm';
+    message: string;
+    onConfirm?: () => void;
+    onCancel?: () => void;
+}
 
 export default function App() {
-  // --- State ---
   const [gameStarted, setGameStarted] = useState(false);
   const [view, setView] = useState<'inventory' | 'gacha' | 'battle' | 'adventure' | 'pokedex'>('gacha');
   
-  // Core Data
   const [knownCards, setKnownCards] = useState<Record<string, CardData>>({});
   const [inventory, setInventory] = useState<Inventory>({});
   const [tokens, setTokens] = useState(INITIAL_TOKENS);
@@ -29,7 +34,6 @@ export default function App() {
   });
   const [hasClaimedStarter, setHasClaimedStarter] = useState(false);
   
-  // UI State
   const [showStarterModal, setShowStarterModal] = useState(false);
   const [drawnCards, setDrawnCards] = useState<{cardId: string, rarity: Rarity, isNew: boolean}[]>([]);
   const [lastDrawAmount, setLastDrawAmount] = useState<number>(0); 
@@ -39,8 +43,67 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]); 
   const [battleState, setBattleState] = useState<BattleState | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  
+  const [notification, setNotification] = useState<NotificationState>({ isOpen: false, type: 'alert', message: '' });
 
-  // --- Initialization & Persistence ---
+  useEffect(() => {
+      const unlockAudio = () => {
+          audioService.init();
+          document.removeEventListener('click', unlockAudio);
+      };
+      document.addEventListener('click', unlockAudio);
+      return () => document.removeEventListener('click', unlockAudio);
+  }, []);
+
+  useEffect(() => {
+      if (!gameStarted) {
+          audioService.playBgm('TITLE');
+      } else if (view === 'battle') {
+          if (battleState?.isBoss) audioService.playBgm('BOSS');
+          else audioService.playBgm('BATTLE');
+      } else {
+          audioService.playBgm('LOBBY');
+      }
+  }, [gameStarted, view, battleState?.isBoss]);
+
+  const toggleMute = () => {
+      const muted = audioService.toggleMute();
+      setIsMuted(muted);
+      audioService.playSfx('CLICK');
+  };
+
+  const showAlert = (message: string) => {
+      audioService.playSfx('CLICK');
+      setNotification({ 
+          isOpen: true, 
+          type: 'alert', 
+          message, 
+          onConfirm: () => {
+              audioService.playSfx('CLICK');
+              setNotification(prev => ({ ...prev, isOpen: false }));
+          }
+      });
+  };
+
+  const showConfirm = (message: string, onConfirm: () => void, onCancel?: () => void) => {
+      audioService.playSfx('CLICK');
+      setNotification({
+          isOpen: true,
+          type: 'confirm',
+          message,
+          onConfirm: () => {
+              audioService.playSfx('CLICK');
+              onConfirm();
+              setNotification(prev => ({ ...prev, isOpen: false }));
+          },
+          onCancel: () => {
+              audioService.playSfx('CANCEL');
+              if (onCancel) onCancel();
+              setNotification(prev => ({ ...prev, isOpen: false }));
+          }
+      });
+  };
 
   const encodeSaveData = (data: GameState): string => {
       try {
@@ -53,8 +116,13 @@ export default function App() {
   };
 
   const decodeSaveData = (encoded: string): GameState => {
-      const json = decodeURIComponent(escape(atob(encoded)));
-      return JSON.parse(json);
+      try {
+          const json = decodeURIComponent(escape(atob(encoded)));
+          return JSON.parse(json);
+      } catch (e) {
+          console.error("Decryption failed, trying legacy parse", e);
+          return JSON.parse(encoded);
+      }
   };
 
   useEffect(() => {
@@ -68,7 +136,6 @@ export default function App() {
         setAdventure(state.adventure);
         setHasClaimedStarter(state.hasClaimedStarter);
         setAwakening(state.awakening || {});
-        setGameStarted(true);
       } catch (e) {
         console.error("Failed to load save:", e);
       }
@@ -86,6 +153,36 @@ export default function App() {
   }, [knownCards, inventory, tokens, adventure, hasClaimedStarter, awakening, gameStarted]);
 
   const handleStartNewGame = () => {
+      audioService.playSfx('START');
+      if (localStorage.getItem('pokegen_save_v1')) {
+          showConfirm("发现已有存档，开始新游戏将覆盖它。确定吗？", () => {
+              initializeNewGame();
+          });
+      } else {
+          initializeNewGame();
+      }
+  };
+  
+  const handleContinueGame = () => {
+      audioService.playSfx('START');
+      const savedData = localStorage.getItem('pokegen_save_v1');
+      if (savedData) {
+          try {
+            const state = JSON.parse(savedData);
+            setKnownCards(state.knownCards);
+            setInventory(state.inventory);
+            setTokens(state.tokens);
+            setAdventure(state.adventure);
+            setHasClaimedStarter(state.hasClaimedStarter);
+            setAwakening(state.awakening || {});
+            setGameStarted(true);
+          } catch (e) {
+             showAlert("存档损坏，无法读取");
+          }
+      }
+  };
+
+  const initializeNewGame = () => {
       const starters: Record<string, CardData> = {};
       MASTER_CARDS.filter(c => STARTER_DEX_IDS.includes(c.id)).forEach(c => starters[c.id] = c);
       setKnownCards(starters);
@@ -105,6 +202,7 @@ export default function App() {
   };
 
   const handleExportSave = () => {
+      audioService.playSfx('CLICK');
       const state: GameState = { knownCards, inventory, tokens, adventure, hasClaimedStarter, awakening };
       const encryptedData = encodeSaveData(state);
       const blob = new Blob([encryptedData], { type: 'text/plain' });
@@ -119,6 +217,7 @@ export default function App() {
   const handleImportSave = (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
+      
       const reader = new FileReader();
       reader.onload = (e) => {
           try {
@@ -131,6 +230,7 @@ export default function App() {
               }
               if (!state.knownCards || !state.inventory) throw new Error("Invalid Save Data Structure");
 
+              audioService.playSfx('START');
               localStorage.setItem('pokegen_save_v1', JSON.stringify(state));
               setKnownCards(state.knownCards);
               setInventory(state.inventory);
@@ -139,9 +239,10 @@ export default function App() {
               setHasClaimedStarter(state.hasClaimedStarter);
               setAwakening(state.awakening || {});
               setGameStarted(true);
-              alert("存档读取成功!");
+              showAlert("存档读取成功!");
+              
           } catch (err) {
-              alert("存档读取失败: 文件已损坏或格式错误");
+              showAlert("存档读取失败: 文件已损坏或格式错误");
           }
       };
       reader.readAsText(file);
@@ -149,19 +250,15 @@ export default function App() {
   };
   
   const handleLogout = () => {
-      if (window.confirm("确定要退出登录并清除本地存档吗？")) {
+      showConfirm("确定要退出登录并清除本地存档吗？此操作不可逆！", () => {
+          audioService.playSfx('CANCEL');
           localStorage.removeItem('pokegen_save_v1');
-          setGameStarted(false);
-          setKnownCards({});
-          setInventory({});
-          setTokens(INITIAL_TOKENS);
-          setAwakening({});
-      }
+          window.location.reload();
+      });
   };
 
-  // --- Helpers ---
-
   const toggleFullScreen = () => {
+    audioService.playSfx('CLICK');
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((e) => console.error(e));
       setIsFullscreen(true);
@@ -188,6 +285,7 @@ export default function App() {
   };
 
   const handleMerge = (cardId: string, currentRarity: Rarity) => {
+    audioService.playSfx('EVOLVE');
     const key = `${cardId}_${currentRarity}`;
     const count = inventory[key] || 0;
     if (count >= 3 && currentRarity < Rarity.LEGENDARY) {
@@ -200,6 +298,7 @@ export default function App() {
   };
 
   const handleAwaken = (cardId: string) => {
+     audioService.playSfx('EVOLVE');
      const key = `${cardId}_${Rarity.LEGENDARY}`;
      const count = inventory[key] || 0;
      const currentLevel = awakening[cardId] || 0;
@@ -207,18 +306,18 @@ export default function App() {
      if (count > 1 && currentLevel < 5) {
          setInventory(prev => ({ ...prev, [key]: prev[key] - 1 }));
          setAwakening(prev => ({ ...prev, [cardId]: (prev[cardId] || 0) + 1 }));
-         alert(`界限突破成功! ${knownCards[cardId].name} 等级提升至 +${currentLevel + 1}!`);
+         showAlert(`界限突破成功! ${knownCards[cardId].name} 等级提升至 +${currentLevel + 1}!`);
      }
   };
 
-  // --- Team Selection Helper ---
   const handleSelectCard = (key: string) => {
+      audioService.playSfx('CLICK');
       setSelectedTeamIds(prev => {
           if (prev.includes(key)) {
               return prev.filter(k => k !== key);
           } else {
               if (prev.length >= 6) {
-                  alert("队伍已满 (最多6只)!");
+                  showAlert("队伍已满 (最多6只)!");
                   return prev;
               }
               return [...prev, key];
@@ -227,10 +326,41 @@ export default function App() {
   };
 
   const claimStarterPack = () => {
+      audioService.playSfx('GET');
       setHasClaimedStarter(true);
       setShowStarterModal(false);
       setLastDrawAmount(STARTER_PACK_SIZE);
-      drawCards(STARTER_PACK_SIZE);
+      
+      const results: {cardId: string, rarity: Rarity, isNew: boolean}[] = [];
+      const allIds = Object.keys(knownCards);
+      
+      const guaranteed = [
+          { id: 'charmander', rarity: Rarity.RARE },
+          { id: 'squirtle', rarity: Rarity.RARE },
+          { id: 'bulbasaur', rarity: Rarity.RARE },
+      ];
+
+      guaranteed.forEach(g => {
+          const hasAnyCopy = Object.keys(inventory).some(k => k.startsWith(g.id));
+          addToInventory(g.id, g.rarity);
+          results.push({ cardId: g.id, rarity: g.rarity, isNew: !hasAnyCopy });
+      });
+
+      for (let i = 0; i < STARTER_PACK_SIZE - 3; i++) {
+          const randomId = allIds[Math.floor(Math.random() * allIds.length)];
+          const r = Math.random();
+          let rarity = Rarity.COMMON;
+          if (r > 0.98) rarity = Rarity.EPIC;
+          else if (r > 0.90) rarity = Rarity.RARE;
+          else if (r > 0.60) rarity = Rarity.UNCOMMON;
+
+          const hasAnyCopy = Object.keys(inventory).some(k => k.startsWith(randomId));
+          addToInventory(randomId, rarity);
+          results.push({ cardId: randomId, rarity, isNew: !hasAnyCopy });
+      }
+
+      setDrawnCards(results);
+      setShowDrawModal(true);
   };
 
   const drawCards = (amount: number) => {
@@ -251,13 +381,15 @@ export default function App() {
     }
     setDrawnCards(results);
     setShowDrawModal(true);
+    audioService.playSfx('GET');
     if (hasClaimedStarter) setTokens(prev => prev + (amount * 2));
   };
 
   const handleBuyDraw = (amount: number) => {
+      audioService.playSfx('CLICK');
       const drawCost = amount * 100;
       if (tokens < drawCost) {
-          alert("金币不足！需要去冒险赚取金币。");
+          showAlert("金币不足！需要去冒险赚取金币。");
           return;
       }
       setTokens(prev => prev - drawCost);
@@ -266,8 +398,9 @@ export default function App() {
   };
 
   const handleScout = async () => {
+    audioService.playSfx('CLICK');
     if (tokens < SCOUT_COST) {
-      alert("金币不足!");
+      showAlert("金币不足!");
       return;
     }
     setIsScouting(true);
@@ -275,7 +408,7 @@ export default function App() {
     const knownIds = Object.keys(knownCards);
     const availablePool = MASTER_CARDS.filter(c => !knownIds.includes(c.id));
     if (availablePool.length === 0) {
-        alert("你已经发现了所有物种！");
+        showAlert("你已经发现了所有物种！");
         setIsScouting(false);
         return;
     }
@@ -287,28 +420,34 @@ export default function App() {
         newDiscoveries.forEach(c => next[c.id] = c);
         return next;
     });
-    alert(`发现新物种!\n${newDiscoveries.map(c => `• ${c.name}`).join('\n')}`);
+    audioService.playSfx('GET');
+    showAlert(`发现新物种!\n${newDiscoveries.map(c => `• ${c.name}`).join('\n')}`);
     setIsScouting(false);
   };
 
   const handleEnhanceArt = async (cardId: string) => {
+    audioService.playSfx('CLICK');
     const card = knownCards[cardId];
     if (card.imageUrl) return; 
     if (tokens < ENHANCE_ART_COST) {
-      alert(`需要 ${ENHANCE_ART_COST} 金币。`);
+      showAlert(`需要 ${ENHANCE_ART_COST} 金币。`);
       return;
     }
-    if (!window.confirm(`花费 ${ENHANCE_ART_COST} 金币为 ${card.name} 生成?`)) return;
-    setTokens(prev => prev - ENHANCE_ART_COST);
-    setIsEnhancingId(cardId);
-    const artUrl = await generateCardArt(card);
-    if (artUrl) {
-      setKnownCards(prev => ({ ...prev, [cardId]: { ...prev[cardId], imageUrl: artUrl } }));
-    } else {
-      setTokens(prev => prev + ENHANCE_ART_COST); 
-      alert("生成失败。");
-    }
-    setIsEnhancingId(null);
+    
+    showConfirm(`花费 ${ENHANCE_ART_COST} 金币为 ${card.name} 生成专属艺术图?`, async () => {
+        setTokens(prev => prev - ENHANCE_ART_COST);
+        setIsEnhancingId(cardId);
+        audioService.playSfx('EVOLVE');
+        const artUrl = await generateCardArt(card);
+        if (artUrl) {
+          setKnownCards(prev => ({ ...prev, [cardId]: { ...prev[cardId], imageUrl: artUrl } }));
+          audioService.playSfx('GET');
+        } else {
+          setTokens(prev => prev + ENHANCE_ART_COST); 
+          showAlert("生成失败，金币已返还。");
+        }
+        setIsEnhancingId(null);
+    });
   };
 
   const handleDevCheat = () => {
@@ -323,10 +462,9 @@ export default function App() {
         });
         return newInv;
     });
-    alert("已获得 10,000,000 金币 和 全图鉴全等级卡牌！");
+    audioService.playSfx('GET');
+    showAlert("已获得 10,000,000 金币 和 全图鉴全等级卡牌！");
   };
-
-  // --- Battle System Logic ---
 
   const getSkillsForCard = (card: CardData): Skill[] => {
       return SKILL_DATABASE[card.type] || SKILL_DATABASE['DEFAULT'];
@@ -345,16 +483,15 @@ export default function App() {
       return pool[index];
   }, [knownCards]);
 
-
   const startBattle = (type: 'adventure' | 'training') => {
-    // Build Player Team from IDs
+    audioService.playSfx('START');
+    
     const team: BattleCard[] = selectedTeamIds.map(key => {
         const [id, rStr] = key.split('_');
         const r = parseInt(rStr) as Rarity;
         const base = knownCards[id];
         const awakeningLvl = awakening[id] || 0;
         
-        // Stats Logic
         const HP_MULTIPLIER = 12; 
         const rarityMult = 1 + ((r - 1) * 0.5);
         const awakenMult = 1 + (awakeningLvl * 0.2);
@@ -372,13 +509,16 @@ export default function App() {
         };
     });
 
-    if (team.length === 0) return; // Should block in UI
+    if (team.length === 0) {
+        showAlert("请先编辑队伍，至少选择一只宝可梦出战！");
+        return;
+    }
 
     const zoneIdx = adventure.currentZoneIndex;
     const stageIdx = adventure.currentStage;
     const isBoss = type === 'adventure' && stageIdx === STAGES_PER_ZONE;
 
-    let baseEnemyRarity = Math.min(5, Math.max(1, Math.floor(zoneIdx / 1) + 1)) as Rarity;
+    let baseEnemyRarity = Math.min(5, Math.max(1, Math.floor(zoneIdx / 2) + 1)) as Rarity;
     if (isBoss) baseEnemyRarity = Math.min(5, Math.max(baseEnemyRarity + 1, ZONES[zoneIdx].bossRarityMin)) as Rarity;
 
     let enemyBase: CardData;
@@ -391,9 +531,13 @@ export default function App() {
         enemyBase = finalPool[Math.floor(Math.random() * finalPool.length)];
     }
 
-    const difficulty = (1 + (zoneIdx * 0.5)) * (1 + ((stageIdx - 1) * 0.1));
-    const enemyHP = Math.floor(enemyBase.hp * 12 * (1 + ((baseEnemyRarity - 1) * 0.5)) * difficulty * (isBoss ? 3.0 : 1));
-    const enemyAtk = Math.floor(enemyBase.attack * (1 + ((baseEnemyRarity - 1) * 0.5)) * difficulty * (isBoss ? 1.2 : 1));
+    const zoneDifficulty = 1 + (zoneIdx * 0.05); 
+    const difficulty = zoneDifficulty;
+    const bossHpMult = isBoss ? 1.3 : 1; 
+    const bossAtkMult = isBoss ? 0.9 : 1;
+
+    const enemyHP = Math.floor(enemyBase.hp * 12 * (1 + ((baseEnemyRarity - 1) * 0.5)) * difficulty * bossHpMult);
+    const enemyAtk = Math.floor(enemyBase.attack * (1 + ((baseEnemyRarity - 1) * 0.5)) * difficulty * bossAtkMult);
 
     const enemyBattleCard: BattleCard = {
         ...enemyBase,
@@ -404,6 +548,9 @@ export default function App() {
         awakeningLevel: 0,
         skills: getSkillsForCard(enemyBase)
     };
+
+    const bossRewardMult = isBoss ? 10 : 1;
+    const rewardAmt = Math.floor(BATTLE_REWARD_BASE * difficulty * bossRewardMult * baseEnemyRarity);
 
     setBattleState({
       playerTeam: team,
@@ -417,17 +564,19 @@ export default function App() {
       status: BattleStatus.ACTIVE,
       isBoss,
       battleType: type,
-      reward: Math.floor(BATTLE_REWARD_BASE * difficulty * (isBoss ? 5 : 1) * baseEnemyRarity),
+      reward: rewardAmt,
       playerCooldowns: [0, 0, 0],
       enemyCooldowns: [0, 0, 0],
       playerBuffs: [],
       enemyBuffs: [],
     });
     setView('battle');
+    audioService.playCry(enemyBase.id);
   };
 
   const handleRun = () => {
       if (!battleState) return;
+      audioService.playSfx('RUN');
       setBattleState(prev => ({ 
           ...prev!, 
           status: BattleStatus.RUNNING, 
@@ -441,32 +590,30 @@ export default function App() {
 
   const handleSwitch = (newIndex: number) => {
       if (!battleState) return;
-      
-      // Reset Buffs and Cooldowns for player on switch (Simplification)
+      audioService.playSfx('CLICK');
       setBattleState(prev => ({
           ...prev!,
           activeCardIndex: newIndex,
-          playerBuffs: [], // Remove buffs on switch
-          playerCooldowns: [0, 0, 0], // Reset CD on switch (optional balance choice)
+          playerBuffs: [], 
+          playerCooldowns: [0, 0, 0],
           logs: [...prev!.logs, `去吧! ${prev!.playerTeam[newIndex].name}!`],
-          status: BattleStatus.ACTIVE, // If we were waiting for switch, now active
-          isPlayerTurn: false // Switch takes turn
+          status: BattleStatus.ACTIVE, 
+          isPlayerTurn: false 
       }));
-      
-      // Trigger Enemy Attack after switch delay
+      const pokemon = battleState.playerTeam[newIndex];
+      audioService.playCry(pokemon.id);
       setTimeout(() => executeEnemyTurn(), 500);
   };
 
   const checkWinCondition = (newState: BattleState) => {
       const { playerTeam, enemyCard, battleType, isBoss, reward } = newState;
-      
       if (enemyCard.currentHp <= 0) {
-          // WIN
+          audioService.playBgm('VICTORY');
           setTokens(t => t + reward);
-          let endMsg = `战斗胜利! 获得了 ${reward} 金币!`;
+          let endMsg = `战斗胜利!`;
           if (battleType === 'adventure') {
               if (isBoss) {
-                  endMsg += ` 区域通关! 开启新区域!`;
+                  endMsg += ` 区域通关!`;
                   setAdventure(prev => ({
                       currentZoneIndex: Math.min(ZONES.length - 1, prev.currentZoneIndex + 1),
                       currentStage: 1,
@@ -479,41 +626,38 @@ export default function App() {
           }
           return { ...newState, status: BattleStatus.WON, logs: [...newState.logs, endMsg] };
       }
-
-      // Check if active player died
       const activePlayer = playerTeam[newState.activeCardIndex];
       if (activePlayer.currentHp <= 0) {
           const hasAliveMembers = playerTeam.some(p => p.currentHp > 0);
           if (hasAliveMembers) {
               return { ...newState, status: BattleStatus.WAITING_FOR_SWITCH, logs: [...newState.logs, `${activePlayer.name} 倒下了!`] };
           } else {
+              audioService.stopBgm(); 
               return { ...newState, status: BattleStatus.LOST, logs: [...newState.logs, "全员战败... 请提升实力再来!"] };
           }
       }
-
       return newState;
   };
 
   const executeTurn = (skillIndex: number = 0) => {
     if (!battleState || battleState.status !== BattleStatus.ACTIVE) return;
-    
-    // --- Player Turn ---
     let currentState = { ...battleState };
     let activePlayer = currentState.playerTeam[currentState.activeCardIndex];
     let enemy = currentState.enemyCard;
     let pBuffs = currentState.playerBuffs;
     let eBuffs = currentState.enemyBuffs;
     let logs = [...currentState.logs];
-
     const playerSkill = activePlayer.skills[skillIndex];
     if (!playerSkill) return;
 
+    if (playerSkill.type === 'DAMAGE') audioService.playSfx('ATTACK');
+    else if (playerSkill.type === 'HEAL') audioService.playSfx('HEAL');
+    else audioService.playSfx('BUFF');
+
     const newPlayerCD = [...currentState.playerCooldowns];
     newPlayerCD[skillIndex] = playerSkill.cd + 1;
-
     logs.push(`${activePlayer.name} 使用了 [${playerSkill.name}]!`);
     
-    // Calc Player Damage
     let playerResult: HitMeta = { value: 0, type: playerSkill.type, isCrit: false, isEffective: false };
     const atkBuff = pBuffs.reduce((acc, b) => b.type === 'BUFF_ATK' ? acc + b.value : acc, 0);
     const defDebuff = eBuffs.reduce((acc, b) => b.type === 'DEBUFF_DEF' ? acc + b.value : acc, 0);
@@ -543,6 +687,8 @@ export default function App() {
         
         enemy = { ...enemy, currentHp: Math.max(0, enemy.currentHp - damage) };
         logs.push(`造成了 ${damage} 点伤害!`);
+        if (damage > 0) setTimeout(() => audioService.playSfx('HIT'), 200);
+
     } else if (playerSkill.type === 'HEAL') {
         const healAmt = Math.floor(activePlayer.attack * playerSkill.power * (0.9 + Math.random() * 0.2));
         activePlayer = { ...activePlayer, currentHp: Math.min(activePlayer.maxHp, activePlayer.currentHp + healAmt) };
@@ -556,7 +702,6 @@ export default function App() {
         logs.push(`对手防御降低!`);
     }
 
-    // Update State after Player Move
     const playerTeam = [...currentState.playerTeam];
     playerTeam[currentState.activeCardIndex] = activePlayer;
 
@@ -577,15 +722,13 @@ export default function App() {
     setBattleState(currentState);
 
     if (currentState.status === BattleStatus.ACTIVE) {
-        setTimeout(() => executeEnemyTurn(), 1000); // Trigger Enemy Turn
+        setTimeout(() => executeEnemyTurn(), 1000);
     }
   };
 
-  // Separated Enemy Turn logic to allow calling it after Switch
   const executeEnemyTurn = () => {
     setBattleState(prevState => {
         if (!prevState || prevState.status !== BattleStatus.ACTIVE) return prevState;
-        
         let activePlayer = prevState.playerTeam[prevState.activeCardIndex];
         let enemy = prevState.enemyCard;
         let logs = [...prevState.logs];
@@ -593,323 +736,247 @@ export default function App() {
         let eBuffs = prevState.enemyBuffs;
         let enemyCD = [...prevState.enemyCooldowns];
 
-        // Choose Skill
         const availableSkills = enemy.skills.map((s, i) => ({ s, i })).filter(({ i }) => enemyCD[i] <= 0);
         const move = availableSkills.length > 0 ? availableSkills[Math.floor(Math.random() * availableSkills.length)] : { s: enemy.skills[0], i: 0 };
         enemyCD[move.i] = move.s.cd + 1;
-
         logs.push(`敌方 ${enemy.name} 使用了 [${move.s.name}]!`);
+        if (move.s.type === 'DAMAGE') setTimeout(() => audioService.playSfx('ATTACK'), 200);
 
         let enemyResult: HitMeta = { value: 0, type: move.s.type, isCrit: false, isEffective: false };
-        const enemyAtkBuff = eBuffs.reduce((acc, b) => b.type === 'BUFF_ATK' ? acc + b.value : acc, 0);
-        const playerDefDebuff = pBuffs.reduce((acc, b) => b.type === 'DEBUFF_DEF' ? acc + b.value : acc, 0);
-
         if (move.s.type === 'DAMAGE') {
             const typeMultipliers = TYPE_CHART[enemy.type] || {};
             const typeMult = typeMultipliers[activePlayer.type] || 1.0;
             let rawDmg = enemy.attack * move.s.power * typeMult * (0.9 + Math.random() * 0.2);
-            if (enemyAtkBuff > 0) rawDmg *= (1 + enemyAtkBuff);
-            if (playerDefDebuff > 0) rawDmg *= (1 + playerDefDebuff);
-
-            let dmg = Math.floor(rawDmg);
+            const defDebuff = pBuffs.reduce((acc, b) => b.type === 'DEBUFF_DEF' ? acc + b.value : acc, 0);
+            if (defDebuff > 0) rawDmg *= (1 + defDebuff);
+            let damage = Math.floor(rawDmg);
             if (typeMult > 1) enemyResult.isEffective = true;
-            enemyResult.value = dmg;
-            
-            activePlayer = { ...activePlayer, currentHp: Math.max(0, activePlayer.currentHp - dmg) };
-            logs.push(`受到了 ${dmg} 点伤害!`);
+            enemyResult.value = damage;
+            activePlayer = { ...activePlayer, currentHp: Math.max(0, activePlayer.currentHp - damage) };
+            logs.push(`${activePlayer.name} 受到了 ${damage} 点伤害!`);
+            if (damage > 0) setTimeout(() => audioService.playSfx('HIT'), 400);
         } else if (move.s.type === 'HEAL') {
             const healAmt = Math.floor(enemy.attack * move.s.power * (0.9 + Math.random() * 0.2));
             enemy = { ...enemy, currentHp: Math.min(enemy.maxHp, enemy.currentHp + healAmt) };
             enemyResult.value = healAmt;
             logs.push(`恢复了 ${healAmt} 点体力!`);
         } else if (move.s.type === 'BUFF_ATK') {
-            eBuffs = [...eBuffs, { type: 'BUFF_ATK', duration: 3, value: move.s.power - 1 }];
-            logs.push(`敌方攻击力提升!`);
+             eBuffs = [...eBuffs, { type: 'BUFF_ATK', duration: 3, value: move.s.power - 1 }];
+             logs.push(`敌方攻击力提升!`);
         } else if (move.s.type === 'DEBUFF_DEF') {
-            pBuffs = [...pBuffs, { type: 'DEBUFF_DEF', duration: 3, value: move.s.power }];
-            logs.push(`我方防御降低!`);
+             pBuffs = [...pBuffs, { type: 'DEBUFF_DEF', duration: 3, value: move.s.power }];
+             logs.push(`我方防御降低!`);
         }
 
-        // Cooldowns & Buffs Decay
         const nextPlayerCD = prevState.playerCooldowns.map(c => Math.max(0, c - 1));
         const nextEnemyCD = enemyCD.map(c => Math.max(0, c - 1));
-        const nextPBuffs = pBuffs.map(b => ({...b, duration: b.duration - 1})).filter(b => b.duration > 0);
-        const nextEBuffs = eBuffs.map(b => ({...b, duration: b.duration - 1})).filter(b => b.duration > 0);
-
-        const playerTeam = [...prevState.playerTeam];
-        playerTeam[prevState.activeCardIndex] = activePlayer;
+        const nextPBuffs = pBuffs.map(b => ({ ...b, duration: b.duration - 1 })).filter(b => b.duration > 0);
+        const nextEBuffs = eBuffs.map(b => ({ ...b, duration: b.duration - 1 })).filter(b => b.duration > 0);
+        const nextPlayerTeam = [...prevState.playerTeam];
+        nextPlayerTeam[prevState.activeCardIndex] = activePlayer;
 
         let newState = {
             ...prevState,
-            playerTeam,
+            playerTeam: nextPlayerTeam,
             enemyCard: enemy,
-            logs,
             playerCooldowns: nextPlayerCD,
             enemyCooldowns: nextEnemyCD,
             playerBuffs: nextPBuffs,
             enemyBuffs: nextEBuffs,
-            lastEnemyAction: move.s.type,
+            logs,
             enemyResult,
-            isPlayerTurn: true,
-            turn: prevState.turn + 1
+            lastEnemyAction: move.s.type,
+            turn: prevState.turn + 1,
+            isPlayerTurn: true
         };
-
         return checkWinCondition(newState);
     });
   };
 
-
-  // ... (Title Screen Render is same) ...
   if (!gameStarted) {
-      return (
-          <div className="h-[100dvh] w-full bg-slate-900 flex flex-col items-center justify-center p-4 relative overflow-hidden">
-              <div className="scanline-bg pointer-events-none z-[60]"></div>
-              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/diagmonds-light.png')] opacity-10"></div>
-              
-              <div className="z-10 text-center space-y-8">
-                  <div className="space-y-2">
-                       <div className="w-24 h-24 bg-red-600 rounded-full border-8 border-white shadow-[0_0_40px_rgba(239,68,68,0.6)] mx-auto flex items-center justify-center relative overflow-hidden animate-pulse">
-                            <div className="absolute top-[45%] left-0 w-full h-2 bg-black/20"></div>
-                            <div className="w-8 h-8 bg-white rounded-full border-4 border-slate-300/50"></div>
-                       </div>
-                       <h1 className="text-5xl md:text-7xl font-bold text-white tracking-tighter drop-shadow-[4px_4px_0_#ef4444]">POKéGEN</h1>
-                       <p className="text-slate-400 tracking-widest uppercase text-sm">AI Monster Collector</p>
-                  </div>
-
-                  <div className="flex flex-col gap-4 w-64 mx-auto">
-                      <button onClick={handleStartNewGame} className="retro-btn py-4 text-xl font-bold rounded shadow-[0_0_20px_rgba(59,130,246,0.4)] flex items-center justify-center gap-2">
-                          <Play className="w-6 h-6 fill-white" /> 开始冒险
-                      </button>
-                      
-                      <label className="retro-btn py-3 bg-slate-700 border-slate-600 text-slate-300 font-bold rounded cursor-pointer flex items-center justify-center gap-2">
-                          <Upload className="w-5 h-5" /> 读取存档
-                          <input type="file" accept=".save" onChange={handleImportSave} className="hidden" />
-                      </label>
-                  </div>
-              </div>
-              <div className="absolute bottom-4 text-slate-600 text-xs font-mono">v1.6.0 - Team Battle Update</div>
-          </div>
-      );
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-900 text-white relative overflow-hidden">
+        <div className="absolute inset-0 holo-bg opacity-20 pointer-events-none"></div>
+        <div className="mb-12 text-center animate-bounce-slow">
+            <div className="w-24 h-24 mx-auto bg-red-600 rounded-full border-8 border-slate-100 flex items-center justify-center mb-4 shadow-xl relative">
+                <div className="w-full h-1 bg-slate-800 absolute top-1/2 -translate-y-1/2"></div>
+                <div className="w-8 h-8 bg-slate-100 rounded-full border-4 border-slate-800 z-10"></div>
+            </div>
+            <h1 className="text-6xl font-bold tracking-tighter text-yellow-400 drop-shadow-[4px_4px_0_rgba(185,28,28,1)]" style={{ fontFamily: 'VT323' }}>POKÉGEN</h1>
+            <p className="text-xl text-slate-400 mt-2 font-mono">AI 收藏家</p>
+        </div>
+        <div className="flex flex-col gap-4 w-64 z-10">
+             <button onClick={handleStartNewGame} className="retro-btn bg-blue-600 py-4 rounded text-xl font-bold shadow-xl hover:scale-105 transition-transform">开始新冒险</button>
+             {localStorage.getItem('pokegen_save_v1') && (
+                 <button onClick={handleContinueGame} className="retro-btn bg-green-600 py-4 rounded text-xl font-bold shadow-xl hover:scale-105 transition-transform">继续游戏</button>
+             )}
+             <label className="retro-btn bg-slate-600 py-3 rounded text-center cursor-pointer hover:bg-slate-500 relative overflow-hidden">
+                 <span>导入存档</span>
+                 <input type="file" accept=".save,.json" onChange={handleImportSave} className="absolute inset-0 opacity-0 cursor-pointer" />
+             </label>
+        </div>
+        {notification.isOpen && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in">
+                <div className="bg-white border-4 border-slate-800 p-6 rounded shadow-2xl max-w-xs text-center retro-container">
+                    <AlertTriangle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+                    <p className="text-lg font-bold mb-6 text-slate-800">{notification.message}</p>
+                    <div className="flex gap-4 justify-center">
+                        {notification.type === 'confirm' && <button onClick={notification.onCancel} className="retro-btn bg-slate-500 px-4 py-2 rounded">取消</button>}
+                        <button onClick={notification.onConfirm} className="retro-btn bg-blue-600 px-6 py-2 rounded">确定</button>
+                    </div>
+                </div>
+            </div>
+        )}
+      </div>
+    );
   }
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-slate-800 font-sans overflow-hidden relative">
-      <div className="scanline-bg pointer-events-none z-[60]"></div>
-
-      <header className="flex-none bg-[#ef4444] border-b-4 border-[#991b1b] p-3 flex justify-between items-center z-50 shadow-lg relative">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-blue-400 rounded-full border-4 border-white shadow-[0_0_10px_rgba(59,130,246,0.8)] animate-pulse"></div>
-          <h1 className="text-xl font-bold text-white drop-shadow-[2px_2px_0_rgba(0,0,0,0.5)] tracking-widest hidden sm:block">POKéGEN</h1>
+    <div className="h-[100dvh] bg-slate-200 flex flex-col max-w-md mx-auto shadow-2xl overflow-hidden relative retro-container">
+      <header className="bg-red-600 text-white p-3 flex justify-between items-center border-b-4 border-red-800 shrink-0 shadow-md z-40">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-white rounded-full border-4 border-white/50 flex items-center justify-center relative overflow-hidden shadow-inner">
+             <div className="w-full h-1 bg-red-800 absolute top-1/2 -translate-y-1/2"></div>
+             <div className="w-3 h-3 bg-red-800 rounded-full z-10 border-2 border-white"></div>
+          </div>
+          <h1 className="text-xl font-bold tracking-widest uppercase drop-shadow-md" style={{ fontFamily: 'VT323' }}>POKÉGEN</h1>
         </div>
-        <div className="flex items-center gap-4">
-           <div className="flex items-center gap-2 bg-slate-900/80 px-4 py-1 rounded border-2 border-slate-600 shadow-inner">
-              <Wallet className="w-4 h-4 text-[#fbbf24]" />
-              <span className="font-mono font-bold text-[#fbbf24] text-lg tracking-wide">{tokens.toLocaleString()}</span>
+        <div className="flex items-center gap-2">
+           <div className="bg-slate-800 px-3 py-1 rounded border-2 border-slate-600 flex items-center gap-2 shadow-inner">
+              <Wallet className="w-4 h-4 text-yellow-400" />
+              <span className="font-mono font-bold text-yellow-400 tracking-wide">{tokens.toLocaleString()}</span>
            </div>
-           <button onClick={toggleFullScreen} className="p-1.5 bg-slate-700 hover:bg-slate-600 rounded border-2 border-slate-500 text-white active:scale-95 transition-transform">
-             {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-           </button>
+           <button onClick={toggleMute} className="p-1.5 bg-red-700 rounded hover:bg-red-500 border-2 border-red-900 shadow">{isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>
+           <button onClick={toggleFullScreen} className="p-1.5 bg-slate-700 rounded hover:bg-slate-600 border-2 border-slate-900 shadow text-white">{isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden bg-[#e2e8f0] flex flex-col relative">
-        <div className="absolute inset-0 shadow-[inset_0_0_20px_rgba(0,0,0,0.2)] pointer-events-none z-10"></div>
-        
-        <div className={`flex-1 overflow-y-auto h-full ${view === 'battle' ? 'p-0' : 'p-0 sm:p-2'}`}>
-          {view === 'inventory' && (
-            <InventoryGrid 
-              inventory={inventory} knownCards={knownCards} awakening={awakening}
-              onMerge={handleMerge} onEnhanceArt={handleEnhanceArt} onAwaken={handleAwaken} enhancingId={isEnhancingId}
-            />
-          )}
-
-          {view === 'adventure' && (
-             <AdventureView 
-                progress={adventure} inventory={inventory} knownCards={knownCards} awakening={awakening}
-                onStartBattle={startBattle} selectedTeamIds={selectedTeamIds} onSelectCard={handleSelectCard} getStageEnemy={getStageEnemy}
-             />
-          )}
-
-          {view === 'battle' && battleState && (
-             <BattleArena battleState={battleState} onAttack={executeTurn} onSwitch={handleSwitch} onRun={handleRun} onLeave={() => setView('adventure')} />
-          )}
-          
-          {view === 'pokedex' && (
-             <PokedexView knownCards={knownCards} inventory={inventory} />
-          )}
-
-          {view === 'gacha' && (
-            <div className="flex flex-col items-center justify-center min-h-full p-4 space-y-8 pb-24">
-              <div className="retro-container bg-[#f0f9ff] p-6 max-w-lg w-full text-center">
-                <h2 className="text-2xl font-bold text-slate-800 mb-2">卡牌商店</h2>
-                <p className="text-slate-600 text-lg">
-                  当前图鉴: <span className="font-bold text-blue-600">{Object.keys(knownCards).length}</span> / {MASTER_CARDS.length}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl px-4">
-                {/* Gacha Box */}
-                <div className="retro-container bg-white p-4 flex flex-col items-center gap-4 hover:bg-blue-50 transition-colors cursor-pointer group" onClick={() => handleBuyDraw(1)}>
-                   <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center border-4 border-slate-300 group-hover:border-red-500 transition-colors">
-                      <Joystick className="w-8 h-8 text-slate-600 group-hover:text-red-500" />
-                   </div>
-                   <h3 className="text-xl font-bold text-slate-800">购买卡包</h3>
-                   <div className="flex gap-2 w-full">
-                      <button onClick={(e) => { e.stopPropagation(); handleBuyDraw(1); }} className="retro-btn flex-1 py-2 font-bold text-sm rounded">x1 (100G)</button>
-                      <button onClick={(e) => { e.stopPropagation(); handleBuyDraw(10); }} className="retro-btn flex-1 py-2 bg-purple-600 border-purple-800 font-bold text-sm rounded">x10 (1000G)</button>
-                   </div>
-                </div>
-
-                {/* Scout Box */}
-                <div className="retro-container bg-white p-4 flex flex-col items-center gap-4 hover:bg-green-50 transition-colors">
-                   <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center border-4 border-slate-300">
-                      <Search className={`w-8 h-8 text-slate-600 ${isScouting ? 'animate-spin' : ''}`} />
-                   </div>
-                   <div className="text-center">
-                      <h3 className="text-xl font-bold text-slate-800">探索图鉴</h3>
-                      <p className="text-xs text-slate-500 mt-1">发现新的物种</p>
-                   </div>
-                   <button onClick={handleScout} disabled={isScouting} className="retro-btn w-full py-2 bg-green-600 border-green-800 font-bold text-sm rounded disabled:opacity-50 disabled:bg-gray-500">
-                      {isScouting ? '探索中...' : `出发! (${SCOUT_COST}G)`}
+      <main className="flex-1 overflow-y-auto relative bg-slate-100 scroll-smooth no-scrollbar">
+        <div className="scanline-bg z-0"></div>
+        <div className="relative z-10 min-h-full">
+            {view === 'inventory' && <InventoryGrid inventory={inventory} knownCards={knownCards} awakening={awakening} onMerge={handleMerge} onEnhanceArt={handleEnhanceArt} onAwaken={handleAwaken} enhancingId={isEnhancingId} onExportSave={handleExportSave} onLogout={handleLogout} />}
+            {view === 'gacha' && (
+            <div className="p-6 flex flex-col items-center space-y-8 pb-32">
+                <div className="w-full retro-container bg-blue-50 p-6 flex flex-col items-center text-center">
+                    <Compass className={`w-16 h-16 text-blue-500 mb-4 ${isScouting ? 'animate-spin' : ''}`} />
+                    <h2 className="text-2xl font-bold text-slate-800 mb-2">探索新物种</h2>
+                    <p className="text-slate-600 mb-6 text-sm">派出无人机寻找未知的宝可梦数据...</p>
+                    <button onClick={handleScout} disabled={isScouting} onMouseEnter={() => audioService.playSfx('HOVER')} className="retro-btn w-full py-3 text-lg rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {isScouting ? '探索中...' : <><Search className="w-5 h-5" /> 探索 ({SCOUT_COST} G)</>}
                     </button>
                 </div>
-              </div>
-
-              {/* Save Controls - Simplified */}
-              <div className="w-full max-w-3xl px-4 pt-6 border-t-2 border-slate-300">
-                 <div className="flex gap-2 justify-center">
-                     <button onClick={handleExportSave} className="retro-btn px-4 py-2 bg-slate-600 border-slate-700 flex items-center gap-2 text-xs">
-                        <Download className="w-4 h-4" /> 备份存档 (本地下载)
-                     </button>
-                     <button onClick={handleLogout} className="retro-btn px-4 py-2 bg-red-600 border-red-700 flex items-center gap-2 text-xs text-white">
-                        <LogOut className="w-4 h-4" /> 退出登录 (清除缓存)
-                     </button>
-                 </div>
-              </div>
-
-              {/* Developer Cheat Button */}
-              <div className="w-full max-w-3xl px-4 pt-6 flex justify-center">
-                  <button onClick={handleDevCheat} className="text-xs text-slate-300 underline hover:text-slate-500">
-                      [DEV] 获取测试大礼包
-                  </button>
-              </div>
-
+                <div className="w-full retro-container bg-purple-50 p-6 flex flex-col items-center text-center relative overflow-hidden">
+                    <div className="absolute -right-8 -top-8 opacity-10 text-purple-900 pointer-events-none"><Gift size={150} /></div>
+                    <h2 className="text-2xl font-bold text-slate-800 mb-2">购买卡包</h2>
+                    <p className="text-slate-600 mb-6 text-sm">获取已发现的宝可梦卡牌</p>
+                    <div className="grid grid-cols-2 gap-4 w-full">
+                        <button onClick={() => handleBuyDraw(1)} onMouseEnter={() => audioService.playSfx('HOVER')} className="retro-btn bg-white text-slate-800 border-slate-300 hover:bg-slate-50 py-4 rounded-lg flex flex-col items-center gap-1">
+                            <span className="text-xl font-bold">1 张</span><span className="text-xs bg-slate-200 px-2 py-0.5 rounded text-slate-600">100 G</span>
+                        </button>
+                        <button onClick={() => handleBuyDraw(10)} onMouseEnter={() => audioService.playSfx('HOVER')} className="retro-btn bg-gradient-to-br from-yellow-400 to-orange-500 border-orange-600 text-white py-4 rounded-lg flex flex-col items-center gap-1 relative overflow-hidden group">
+                            <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform"></div><span className="text-xl font-bold relative z-10">10 连抽</span><span className="text-xs bg-black/20 px-2 py-0.5 rounded text-white relative z-10">1000 G</span>
+                        </button>
+                    </div>
+                </div>
+                <button onClick={handleDevCheat} className="opacity-0 w-2 h-2 relative z-50 cursor-pointer bg-white"></button>
             </div>
-          )}
-
+            )}
+            {view === 'battle' && battleState && (
+            <BattleArena battleState={battleState} onAttack={executeTurn} onSwitch={handleSwitch} onRun={handleRun} onLeave={() => setBattleState(null)} zoneIndex={adventure.currentZoneIndex} />
+            )}
+            {view === 'adventure' && <AdventureView progress={adventure} inventory={inventory} knownCards={knownCards} awakening={awakening} onStartBattle={startBattle} selectedTeamIds={selectedTeamIds} onSelectCard={handleSelectCard} getStageEnemy={getStageEnemy} />}
+            {view === 'pokedex' && <PokedexView knownCards={knownCards} inventory={inventory} />}
         </div>
       </main>
 
-      {/* --- Tab Navigation --- */}
-      <nav className="bg-white border-t-4 border-slate-700 pb-6 pt-2 px-2 flex justify-around items-end h-24 shrink-0 relative z-40 shadow-[0_-4px_10px_rgba(0,0,0,0.1)]">
-        
-        <button 
-            onClick={() => setView('inventory')}
-            className={`flex flex-col items-center gap-1 transition-all ${view === 'inventory' ? 'text-blue-600 -translate-y-3 scale-110' : 'text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className={`p-2 rounded-full border-2 ${view === 'inventory' ? 'bg-blue-50 border-blue-500 shadow-lg' : 'border-transparent'}`}>
-             <Layers className="w-6 h-6" />
-          </div>
-          <span className="text-[10px] font-bold font-mono">背包</span>
-        </button>
+      {view !== 'battle' && (
+          <nav className="bg-white border-t-4 border-slate-700 pt-2 px-2 flex justify-around items-end h-24 shrink-0 relative z-40 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+            <button onClick={() => { setView('inventory'); audioService.playSfx('CLICK'); }} className={`flex flex-col items-center pb-2 w-16 transition-transform duration-200 ${view === 'inventory' ? '-translate-y-4 scale-110' : 'opacity-60 hover:opacity-100 hover:-translate-y-1'}`}>
+                <div className={`p-3 rounded-xl border-4 ${view === 'inventory' ? 'bg-blue-500 border-blue-700 text-white shadow-lg' : 'bg-slate-100 border-slate-300 text-slate-500'}`}><Layers className="w-6 h-6" /></div>
+                <span className={`text-[10px] font-bold mt-1 uppercase tracking-wider ${view === 'inventory' ? 'text-blue-600' : 'text-slate-400'}`}>背包</span>
+            </button>
+            <button onClick={() => { setView('adventure'); audioService.playSfx('CLICK'); }} className={`flex flex-col items-center pb-2 w-16 transition-transform duration-200 ${view === 'adventure' ? '-translate-y-4 scale-110' : 'opacity-60 hover:opacity-100 hover:-translate-y-1'}`}>
+                <div className={`p-3 rounded-xl border-4 ${view === 'adventure' ? 'bg-red-500 border-red-700 text-white shadow-lg' : 'bg-slate-100 border-slate-300 text-slate-500'}`}><Compass className="w-6 h-6" /></div>
+                <span className={`text-[10px] font-bold mt-1 uppercase tracking-wider ${view === 'adventure' ? 'text-red-600' : 'text-slate-400'}`}>冒险</span>
+            </button>
+            <button onClick={() => { setView('gacha'); audioService.playSfx('CLICK'); }} className={`flex flex-col items-center pb-2 w-16 transition-transform duration-200 ${view === 'gacha' ? '-translate-y-4 scale-110' : 'opacity-60 hover:opacity-100 hover:-translate-y-1'}`}>
+                <div className={`p-3 rounded-xl border-4 ${view === 'gacha' ? 'bg-purple-500 border-purple-700 text-white shadow-lg' : 'bg-slate-100 border-slate-300 text-slate-500'}`}><Gift className="w-6 h-6" /></div>
+                <span className={`text-[10px] font-bold mt-1 uppercase tracking-wider ${view === 'gacha' ? 'text-purple-600' : 'text-slate-400'}`}>商店</span>
+            </button>
+            <button onClick={() => { setView('pokedex'); audioService.playSfx('CLICK'); }} className={`flex flex-col items-center pb-2 w-16 transition-transform duration-200 ${view === 'pokedex' ? '-translate-y-4 scale-110' : 'opacity-60 hover:opacity-100 hover:-translate-y-1'}`}>
+                <div className={`p-3 rounded-xl border-4 ${view === 'pokedex' ? 'bg-yellow-500 border-yellow-700 text-white shadow-lg' : 'bg-slate-100 border-slate-300 text-slate-500'}`}><BookOpen className="w-6 h-6" /></div>
+                <span className={`text-[10px] font-bold mt-1 uppercase tracking-wider ${view === 'pokedex' ? 'text-yellow-600' : 'text-slate-400'}`}>图鉴</span>
+            </button>
+          </nav>
+      )}
 
-        <button 
-            onClick={() => setView('adventure')}
-            className={`flex flex-col items-center gap-1 transition-all ${view === 'adventure' ? 'text-red-600 -translate-y-3 scale-110' : 'text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className={`p-2 rounded-full border-2 ${view === 'adventure' ? 'bg-red-50 border-red-500 shadow-lg' : 'border-transparent'}`}>
-             <Compass className="w-6 h-6" />
-          </div>
-          <span className="text-[10px] font-bold font-mono">冒险</span>
-        </button>
-
-        <button 
-            onClick={() => setView('gacha')}
-            className={`flex flex-col items-center gap-1 transition-all ${view === 'gacha' ? 'text-yellow-600 -translate-y-3 scale-110' : 'text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className={`p-2 rounded-full border-2 ${view === 'gacha' ? 'bg-yellow-50 border-yellow-500 shadow-lg' : 'border-transparent'}`}>
-             <Joystick className="w-6 h-6" />
-          </div>
-          <span className="text-[10px] font-bold font-mono">商店</span>
-        </button>
-        
-        <button 
-            onClick={() => setView('pokedex')}
-            className={`flex flex-col items-center gap-1 transition-all ${view === 'pokedex' ? 'text-green-600 -translate-y-3 scale-110' : 'text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className={`p-2 rounded-full border-2 ${view === 'pokedex' ? 'bg-green-50 border-green-500 shadow-lg' : 'border-transparent'}`}>
-             <BookOpen className="w-6 h-6" />
-          </div>
-          <span className="text-[10px] font-bold font-mono">图鉴</span>
-        </button>
-      </nav>
-
-      {/* Modals */}
-      
-      {/* Starter Pack Modal */}
       {showStarterModal && (
-        <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-[100] p-4 animate-in fade-in">
-           <div className="retro-container bg-white max-w-sm w-full p-6 text-center relative">
-               <div className="absolute -top-8 left-1/2 -translate-x-1/2">
-                  <Gift className="w-16 h-16 text-red-500 drop-shadow-lg animate-bounce" />
-               </div>
-               <h2 className="text-2xl font-bold mt-6 mb-2 text-slate-800">大木博士的礼物</h2>
-               <p className="text-slate-600 mb-6">
-                  "欢迎来到这个世界！<br/>这 10 个精灵球是你冒险的开始，<br/>去收集所有的宝可梦吧！"
-               </p>
-               <button onClick={claimStarterPack} className="retro-btn w-full py-3 text-lg rounded shadow-lg animate-pulse">
-                  领取 10 连抽
-               </button>
-           </div>
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-lg p-6 max-w-sm w-full text-center border-4 border-slate-800 retro-container">
+            <Gift className="w-16 h-16 text-red-500 mx-auto mb-4 animate-bounce" />
+            <h2 className="text-2xl font-bold mb-2 text-slate-800">大木博士的礼物!</h2>
+            <p className="text-slate-600 mb-6">欢迎来到 PokeGen 世界！<br/>这是给新手的 10 连抽，必得御三家！</p>
+            <button onClick={claimStarterPack} className="retro-btn w-full py-3 rounded text-lg font-bold bg-red-500 hover:bg-red-600 animate-pulse">领取礼物</button>
+          </div>
         </div>
       )}
 
-      {/* Draw Result Modal */}
       {showDrawModal && (
-        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-[100] p-4 overflow-y-auto">
-           <div className="w-full max-w-4xl flex flex-col items-center my-auto">
-               <div className="flex justify-between items-center w-full max-w-lg mb-4 text-white">
-                   <h2 className="text-2xl font-bold tracking-wider">!! GOTCHA !!</h2>
-                   <button onClick={() => setShowDrawModal(false)} className="p-2 hover:bg-white/20 rounded-full"><X /></button>
-               </div>
-               
-               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-8">
-                  {drawnCards.map((item, idx) => {
-                      const cardData = knownCards[item.cardId];
-                      return (
-                          <div key={idx} className="animate-pop-in" style={{ animationDelay: `${idx * 100}ms` }}>
-                             <CardView 
-                               data={cardData} 
-                               rarity={item.rarity} 
-                               isNew={item.isNew}
-                               showEnhance={false}
-                             />
-                          </div>
-                      );
-                  })}
-               </div>
-
-               <div className="flex gap-4">
-                  <button 
-                     onClick={() => {
-                        setShowDrawModal(false);
-                        handleBuyDraw(lastDrawAmount);
-                     }} 
-                     className="retro-btn bg-yellow-500 border-yellow-700 text-black px-8 py-3 font-bold rounded shadow-lg hover:scale-105 transition-transform"
-                  >
-                     再来 x{lastDrawAmount} ({lastDrawAmount * 100}G)
-                  </button>
-                  <button 
-                     onClick={() => setShowDrawModal(false)} 
-                     className="retro-btn bg-slate-600 border-slate-800 px-8 py-3 font-bold rounded shadow-lg hover:scale-105 transition-transform"
-                  >
-                     关闭
-                  </button>
-               </div>
-           </div>
+        <div className="absolute inset-0 z-50 flex flex-col bg-slate-900/95 animate-in zoom-in duration-300">
+          <div className="flex justify-between items-center p-4 text-white border-b border-slate-700">
+             <h2 className="text-xl font-bold tracking-widest">!! GOTCHA !!</h2>
+             <button onClick={() => setShowDrawModal(false)}><X className="w-6 h-6" /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 gap-4 justify-items-center content-start">
+             {drawnCards.map((item, idx) => {
+                 const card = knownCards[item.cardId];
+                 return <div key={idx} className="animate-pop-in" style={{ animationDelay: `${idx * 150}ms` }}><CardView data={card} rarity={item.rarity} isNew={item.isNew} /></div>;
+             })}
+          </div>
+          <div className="p-4 border-t border-slate-700 bg-slate-800 flex gap-4 justify-center">
+             <button onClick={() => handleBuyDraw(lastDrawAmount)} className="retro-btn bg-yellow-500 border-yellow-700 text-white px-6 py-3 rounded font-bold shadow-lg flex flex-col items-center leading-none"><span>再抽一次</span><span className="text-[10px] mt-1">{lastDrawAmount * 100} G</span></button>
+             <button onClick={() => setShowDrawModal(false)} className="retro-btn bg-slate-600 border-slate-800 text-white px-8 py-3 rounded font-bold shadow-lg">关闭</button>
+          </div>
         </div>
       )}
 
+      {battleState && (battleState.status === BattleStatus.WON || battleState.status === BattleStatus.LOST) && (
+          <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm animate-in zoom-in">
+              <div className={`retro-container p-8 rounded-lg max-w-xs w-full text-center border-4 shadow-2xl ${battleState.status === BattleStatus.WON ? 'bg-yellow-50 border-yellow-500' : 'bg-slate-100 border-slate-500'}`}>
+                  {battleState.status === BattleStatus.WON ? (
+                      <>
+                        <Trophy className="w-20 h-20 text-yellow-500 mx-auto mb-4 animate-bounce" />
+                        <h2 className="text-3xl font-bold text-yellow-600 mb-2">战斗胜利!</h2>
+                        <div className="flex items-center justify-center gap-2 text-xl font-mono font-bold text-slate-700 mb-6">
+                            <span>获得</span>
+                            <span className="flex items-center text-yellow-600 bg-yellow-100 px-3 py-1 rounded border border-yellow-300"><Wallet className="w-5 h-5 mr-2" /> {battleState.reward}</span>
+                        </div>
+                        {battleState.isBoss && <div className="bg-blue-100 text-blue-700 p-2 rounded text-sm font-bold mb-4 animate-pulse">🎉 新区域已解锁!</div>}
+                      </>
+                  ) : (
+                      <>
+                        <Skull className="w-20 h-20 text-slate-400 mx-auto mb-4" />
+                        <h2 className="text-3xl font-bold text-slate-600 mb-2">战斗失败...</h2>
+                        <p className="text-slate-500 mb-6">别气馁，提升实力再来挑战！</p>
+                      </>
+                  )}
+                  <button onClick={() => { audioService.playSfx('CLICK'); setBattleState(null); setView('adventure'); audioService.playBgm('LOBBY'); }} className="retro-btn w-full py-3 text-lg font-bold bg-blue-600 rounded">确定</button>
+              </div>
+          </div>
+      )}
+
+      {notification.isOpen && (
+          <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-white border-4 border-slate-800 p-6 rounded shadow-2xl max-w-xs text-center retro-container">
+                  <AlertTriangle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+                  <p className="text-lg font-bold mb-6 text-slate-800 whitespace-pre-wrap">{notification.message}</p>
+                  <div className="flex gap-4 justify-center">
+                      {notification.type === 'confirm' && <button onClick={notification.onCancel} className="retro-btn bg-slate-500 px-4 py-2 rounded text-white font-bold">取消</button>}
+                      <button onClick={notification.onConfirm} className="retro-btn bg-blue-600 px-6 py-2 rounded text-white font-bold">确定</button>
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 }

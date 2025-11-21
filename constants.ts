@@ -2,9 +2,9 @@
 import { CardData, ZoneData, Rarity, Skill } from './types';
 
 export const INITIAL_TOKENS = 0; // Start with 0, forced to claim starter pack
-export const SCOUT_COST = 500; // Increased cost for local guaranteed scout
+export const SCOUT_COST = 100; // Reduced to 100
 export const ENHANCE_ART_COST = 500;
-export const BATTLE_REWARD_BASE = 20;
+export const BATTLE_REWARD_BASE = 100; // Increased base reward
 
 export const STAGES_PER_ZONE = 5;
 export const STARTER_PACK_SIZE = 10;
@@ -97,43 +97,83 @@ export const INITIAL_CARDS: CardData[] = MASTER_CARDS.filter(c => STARTER_DEX_ID
 
 export const ZONES: ZoneData[] = [
   { 
+    name: '真新镇郊外', 
+    description: '冒险开始的地方，栖息着温顺的宝可梦。', 
+    color: 'bg-green-500', 
+    bossRarityMin: Rarity.COMMON,
+    allowedTypes: ['一般', '飞行'],
+    bossId: 'pidgeot'
+  },
+  { 
     name: '常磐森林', 
-    description: '充满虫系和草系宝可梦的茂密森林。', 
-    color: 'bg-green-600', 
+    description: '阴暗潮湿的森林，是虫系宝可梦的乐园。', 
+    color: 'bg-green-700', 
     bossRarityMin: Rarity.UNCOMMON,
-    allowedTypes: ['草', '虫', '毒'],
-    bossId: 'venusaur'
+    allowedTypes: ['虫', '草', '毒'],
+    bossId: 'beedrill'
   },
   { 
     name: '月见山', 
-    description: '栖息着岩石系和神秘宝可梦的洞窟。', 
+    description: '神秘的洞窟，据说有月之石落下。', 
     color: 'bg-slate-600', 
-    bossRarityMin: Rarity.RARE,
-    allowedTypes: ['岩石', '地面', '一般', '格斗'],
-    bossId: 'onix'
+    bossRarityMin: Rarity.UNCOMMON,
+    allowedTypes: ['岩石', '一般', '毒', '格斗'],
+    bossId: 'golem'
   },
   { 
     name: '华蓝洞窟', 
-    description: '非常危险的地下迷宫，水路错综复杂。', 
-    color: 'bg-blue-600', 
+    description: '水路复杂的洞穴，需要潜水才能前进。', 
+    color: 'bg-blue-500', 
     bossRarityMin: Rarity.RARE,
-    allowedTypes: ['水', '冰', '超能力'],
+    allowedTypes: ['水', '超能力', '冰'],
     bossId: 'blastoise'
   },
   { 
-    name: '无人发电厂', 
-    description: '被遗弃的发电厂，充满了电系宝可梦。', 
-    color: 'bg-yellow-600', 
+    name: '岩山隧道', 
+    description: '漆黑的隧道，需要闪光术才能看清。', 
+    color: 'bg-amber-700', 
+    bossRarityMin: Rarity.RARE,
+    allowedTypes: ['岩石', '地面', '格斗'],
+    bossId: 'onix'
+  },
+  { 
+    name: '宝可梦塔', 
+    description: '紫苑镇的灵魂安息之地，幽灵出没。', 
+    color: 'bg-purple-700', 
+    bossRarityMin: Rarity.RARE,
+    allowedTypes: ['幽灵', '毒', '超能力'],
+    bossId: 'gengar'
+  },
+  { 
+    name: '狩猎地带', 
+    description: '拥有稀有宝可梦的自然保护区。', 
+    color: 'bg-lime-600', 
     bossRarityMin: Rarity.EPIC,
-    allowedTypes: ['电', '幽灵', '钢'],
-    bossId: 'raichu'
+    allowedTypes: ['一般', '草', '水', '龙'],
+    bossId: 'dragonite'
+  },
+  { 
+    name: '双子岛', 
+    description: '被冰雪覆盖的双子岛屿，寒气逼人。', 
+    color: 'bg-cyan-600', 
+    bossRarityMin: Rarity.EPIC,
+    allowedTypes: ['冰', '水', '超能力'],
+    bossId: 'articuno'
+  },
+  { 
+    name: '无人发电厂', 
+    description: '被废弃的发电厂，积蓄着狂暴的电力。', 
+    color: 'bg-yellow-600', 
+    bossRarityMin: Rarity.LEGENDARY,
+    allowedTypes: ['电', '钢', '毒'],
+    bossId: 'zapdos'
   },
   { 
     name: '冠军之路', 
-    description: '只有最强的训练家才能通过的试炼之路。', 
-    color: 'bg-purple-600', 
+    description: '通往石英高原的最后试炼，强敌环伺。', 
+    color: 'bg-indigo-800', 
     bossRarityMin: Rarity.LEGENDARY,
-    allowedTypes: ['龙', '火', '超能力', '一般'],
+    allowedTypes: ['火', '龙', '超能力', '格斗', '岩石'],
     bossId: 'mewtwo'
   },
 ];

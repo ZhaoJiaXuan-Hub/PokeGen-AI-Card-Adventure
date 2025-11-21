@@ -3,6 +3,7 @@ import React, { useMemo } from 'react';
 import { AdventureProgress, CardData, Inventory, Rarity } from '../types';
 import { ZONES, STAGES_PER_ZONE } from '../constants';
 import { Map, Skull, Trophy, Sword, Heart, Star, CheckCircle, Zap, Lock, Users } from 'lucide-react';
+import { audioService } from '../services/audioService';
 
 interface AdventureViewProps {
   progress: AdventureProgress;
@@ -41,21 +42,13 @@ export const AdventureView: React.FC<AdventureViewProps> = ({ progress, inventor
         });
   }, [inventory, knownCards, awakening]);
 
-  // Auto-select if empty (just one) - Optional, maybe better to let user choose
-  React.useEffect(() => {
-    if (selectedTeamIds.length === 0 && teamList.length > 0) {
-        onSelectCard(teamList[0].key);
-    }
-  }, [teamList, selectedTeamIds.length, onSelectCard]);
-
   const currentZone = ZONES[progress.currentZoneIndex];
   const isBossStage = progress.currentStage === STAGES_PER_ZONE;
 
   const handleBattleClick = (type: 'adventure' | 'training') => {
-    if (selectedTeamIds.length === 0) {
-        alert("请至少选择一只宝可梦！");
-        return;
-    }
+    audioService.playSfx('CLICK');
+    // We no longer block empty teams here. 
+    // We pass the call to App.tsx so it can use the global showAlert to warn the user.
     onStartBattle(type);
   };
 
@@ -132,6 +125,7 @@ export const AdventureView: React.FC<AdventureViewProps> = ({ progress, inventor
       <div className="grid grid-cols-2 gap-4 shrink-0">
         <button 
             onClick={() => handleBattleClick('adventure')}
+            onMouseEnter={() => audioService.playSfx('HOVER')}
             className={`retro-btn py-4 rounded-lg flex flex-col items-center justify-center gap-1 ${isBossStage ? 'bg-red-600 border-red-800 hover:bg-red-500' : 'bg-blue-600 border-blue-800 hover:bg-blue-500'}`}
         >
             {isBossStage ? <Skull className="w-8 h-8 animate-pulse" /> : <Sword className="w-8 h-8" />}
@@ -141,6 +135,7 @@ export const AdventureView: React.FC<AdventureViewProps> = ({ progress, inventor
 
         <button 
              onClick={() => handleBattleClick('training')}
+             onMouseEnter={() => audioService.playSfx('HOVER')}
             className="retro-btn bg-green-600 border-green-800 hover:bg-green-500 py-4 rounded-lg flex flex-col items-center justify-center gap-1"
         >
             <Trophy className="w-8 h-8" />

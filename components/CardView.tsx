@@ -1,8 +1,8 @@
 
-
 import React, { useState, useEffect } from 'react';
 import { Rarity, CardData } from '../types';
 import { Sparkles, Flame, Droplets, Leaf, Zap, Ghost, Brain, Circle, Star } from 'lucide-react';
+import { audioService } from '../services/audioService';
 
 interface CardViewProps {
   data: CardData;
